@@ -1,11 +1,12 @@
+import dotenv from "dotenv";
+dotenv.config();
+
 import express from "express";
 import http from "http";
 import { Server } from "socket.io";
 import cors from "cors";
-import dotenv from "dotenv";
-import { factCheck } from "./factCheck.js";
 
-dotenv.config();
+const { factCheck } = await import("./factCheck.js");
 
 const app = express();
 app.use(cors());
@@ -32,7 +33,19 @@ io.on("connection", (socket) => {
       });
     } catch (err) {
       console.error("❌ Fact check error", err);
+      io.emit("FACT_ERROR", {
+        speakerId: data.speakerId,
+        error: "Failed to process fact check"
+      });
     }
+  });
+
+  socket.on("error", (error) => {
+    console.error("⚠️ Socket error:", socket.id, error);
+  });
+
+  socket.on("disconnect", () => {
+    console.log("🔌 Disconnected:", socket.id);
   });
 });
 
