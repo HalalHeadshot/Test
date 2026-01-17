@@ -1,12 +1,11 @@
-import dotenv from "dotenv";
-dotenv.config();
-
 import express from "express";
 import http from "http";
 import { Server } from "socket.io";
 import cors from "cors";
+import dotenv from "dotenv";
+import analyzeClaims from "./analyzeClaims.js";
 
-const { factCheck } = await import("./factCheck.js");
+dotenv.config();
 
 const app = express();
 app.use(cors());
@@ -16,39 +15,68 @@ const io = new Server(server, {
   cors: { origin: "*" }
 });
 
+// 🔒 RATE LIMITING (VERY IMPORTANT)
+const lastRequestTime = new Map();
+const COOLDOWN_MS = 15000; // 15 seconds per debater
+
 io.on("connection", (socket) => {
   console.log("🟢 Connected:", socket.id);
 
-  socket.on("TRANSCRIPT_FINAL", async (data) => {
-    console.log("🎤 Claim:", data.text);
+  socket.on("TRANSCRIPT_FINAL", async ({ speakerId, text }) => {
+    const now = Date.now();
+    const lastTime = lastRequestTime.get(socket.id) || 0;
 
-    try {
-      const analysis = await factCheck(data.text);
+    if (now - lastTime < COOLDOWN_MS) {
+      console.log("⏳ Rate limited request");
 
       io.emit("FACT_RESULT", {
-        speakerId: data.speakerId,
-        claim: data.text,
-        ...analysis,
+        speakerId,
+        claim: text,
+        verdict: "rate_limited",
+        analysis: "Please wait before submitting another claim.",
         timestamp: Date.now()
       });
+      return;
+    }
+
+    lastRequestTime.set(socket.id, now);
+    console.log("🎤 Claim:", text);
+
+    try {
+      const results = await analyzeClaims(text);
+
+      if (!results || results.length === 0) {
+        console.log("ℹ️ No fact-checkable claims");
+        return;
+      }
+
+      for (const result of results) {
+        io.emit("FACT_RESULT", {
+          speakerId,
+          claim: result.claim,
+          verdict: result.verdict,
+          analysis: result.analysis,
+          timestamp: Date.now()
+        });
+      }
     } catch (err) {
-      console.error("❌ Fact check error", err);
-      io.emit("FACT_ERROR", {
-        speakerId: data.speakerId,
-        error: "Failed to process fact check"
+      console.error("❌ Fact check error:", err.message);
+
+      io.emit("FACT_RESULT", {
+        speakerId,
+        claim: text,
+        verdict: "error",
+        analysis: "Fact-checking service unavailable",
+        timestamp: Date.now()
       });
     }
   });
 
-  socket.on("error", (error) => {
-    console.error("⚠️ Socket error:", socket.id, error);
-  });
-
   socket.on("disconnect", () => {
-    console.log("🔌 Disconnected:", socket.id);
+    console.log("🔴 Disconnected:", socket.id);
   });
 });
 
-server.listen(2000, () =>
-  console.log("🚀 Server running at http://localhost:2000")
-);
+server.listen(2000, () => {
+  console.log("🚀 Server running at http://localhost:2000");
+});
