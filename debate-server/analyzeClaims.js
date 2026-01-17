@@ -1,3 +1,4 @@
+// analyzeClaims.js
 import dotenv from "dotenv";
 dotenv.config();
 
@@ -6,18 +7,38 @@ import extractFactCheckableClaims from "./semantic-filter.js";
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
+/**
+ * Safely parses Gemini output.
+ * - If valid JSON → return it
+ * - If plain text (e.g. starts with INACCURATE) → wrap it
+ */
+function safeParseGeminiResponse(text, claims) {
+  try {
+    return JSON.parse(text);
+  } catch (err) {
+    return [
+      {
+        claim: claims.map(c => c.claim).join(" | "),
+        verdict: text.trim().startsWith("INACCURATE") ? "false" : "uncertain",
+        analysis: text.trim()
+      }
+    ];
+  }
+}
+
 async function analyzeClaims(transcript) {
   if (!GEMINI_API_KEY) {
     throw new Error("GEMINI_API_KEY not found");
   }
 
+  // 🔹 PART 1 — CLAIM EXTRACTION (UNCHANGED)
   const claims = await extractFactCheckableClaims(transcript);
 
   if (!claims || claims.length === 0) {
     return [];
   }
 
-  // 🔒 YOUR PROMPT — UNCHANGED
+  // 🔒 YOUR PROMPT — 100% UNCHANGED
   const prompt = `
 You are a neutral debate analyst.
 
@@ -62,10 +83,13 @@ Return ONLY valid JSON in this structure:
   });
 
   const res = await model.generateContent(prompt);
-  const text = res.response.text();
+  const rawText = res.response.text();
 
-  const cleaned = text.replace(/```json\n?|```/g, "").trim();
-  return JSON.parse(cleaned);
+  // 🧼 Clean markdown if Gemini adds it
+  const cleanedText = rawText.replace(/```json\n?|```/g, "").trim();
+
+  // 🛡️ SAFE PARSE (NO CRASH EVER)
+  return safeParseGeminiResponse(cleanedText, claims);
 }
 
 export default analyzeClaims;
